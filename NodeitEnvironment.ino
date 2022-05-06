@@ -53,9 +53,7 @@ DallasTemperature DS18B20(&oneWire);
 
  // Update these with values suitable for your network.
 
-const char* ssid = THE_SSID;
-const char* password = THE_PASSWORD;
-const char* mqtt_server = THE_SERVER;
+#include "mySSID.h"
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -121,7 +119,7 @@ void mqtt_connect() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
     // Attempt to connect
-    if (client.connect((char*) clientName.c_str())) {
+    if (client.connect((char*) clientName.c_str()), mqtt_user, mqtt_passw) {
     //if (client.connect("EnvClient")) {
       Serial.println("connected");
       // Once connected, publish an announcement...
