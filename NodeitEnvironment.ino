@@ -45,16 +45,20 @@
 #define SDA_PIN          2
 #define SCL_PIN          14
 
+#define MAX_NTEMP 5
+
 #ifdef UTE_TEMP
 #define ONE_WIRE_BUS 5  // DS18B20 pin
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature DS18B20(&oneWire);
+// arrays to hold device addresses
+DeviceAddress thermometerAddr[MAX_NTEMP+1];
 #endif
 
- // Update these with values suitable for your network.
-
+// Update these with values suitable for your network.
 #include "mySSID.h"
 
+// The client instance
 WiFiClient espClient;
 PubSubClient client(espClient);
 
@@ -65,9 +69,6 @@ char msg[50];
 // The OPT3001 instance
 Opt3001 opt3001;
  
-// The client instance
-//WiFiClient client;
-
 unsigned long tm = 0L;
 
 void setup_wifi() {
@@ -85,7 +86,7 @@ void setup_wifi() {
   while (WiFi.status() != WL_CONNECTED) {
     setLed(bOn ? LED_ON : LED_OFF);
     bOn = !bOn;
-    delay(500);
+    delay(1000);
     Serial.print(".");
   }
 
@@ -119,14 +120,14 @@ void mqtt_connect() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
     // Attempt to connect
-    if (client.connect((char*) clientName.c_str()), mqtt_user, mqtt_passw) {
-    //if (client.connect("EnvClient")) {
+    if (client.connect((char*) clientName.c_str(), mqtt_user, mqtt_passw) ) {
       Serial.println("connected");
       // Once connected, publish an announcement...
       //sprintf(msg, "Hello World #%d", xx++);
       //client.publish("nodeit/environment", msg);
       // ... and resubscribe
       //client.subscribe("inTopic");
+      delay(2000);
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -142,7 +143,28 @@ void mqtt_connect() {
   }
 }
 
-#define MAX_NTEMP 5
+void sendMqtt(char *topic, char *msg)
+{
+/*  
+  Serial.print("Topic: [");
+  Serial.print(topic);
+  Serial.print("] --> \"");
+  Serial.print(msg);
+  Serial.println("\"");
+*/
+  client.publish(topic, msg);
+}
+
+// function to print a device address
+void printAddress(DeviceAddress deviceAddress)
+{
+  for (uint8_t i = 0; i < 8; i++)
+  {
+    // zero pad the address if necessary
+    if (deviceAddress[i] < 16) Serial.print("0");
+    Serial.print(deviceAddress[i], HEX);
+  }
+}
 
 void setup() {
   float temp[MAX_NTEMP+1];
@@ -234,27 +256,43 @@ void setup() {
     cnt = DS18B20.getDeviceCount();
     tm = millis() - tm;
     sprintf(msg, "cnt = %d, %ld", cnt, tm);
-    client.publish("nodeit/status", msg);
+    sendMqtt("nodeit/status", msg);
     DS18B20.requestTemperatures(); 
     for( int i=0; i < cnt && i < MAX_NTEMP; i++ ) {
+      DS18B20.getAddress(thermometerAddr[i+1], i);
       temp[i+1] = DS18B20.getTempCByIndex(i);
     }
     cnt++;
 #else
     cnt = 1; // Just one temp ...
 #endif
-
+    char dsTemp[1024];
+    int dsn = 0;
     dtostrf(pressure,1,1,msg);
-    client.publish("nodeit/status/pressure", msg);
+    sendMqtt("nodeit/status/pressure", msg);
+    dsn += sprintf(dsTemp, "{");
     for(int i=0; i<cnt; i++) {
       dtostrf(temp[i],1,1,msg);
-      sprintf(topic, "nodeit/status/temp%d", i+1);
-      client.publish(topic, msg);
+      if( i == 0 ) {
+        sprintf(topic, "nodeit/status/temp%d", i+1);
+        sendMqtt(topic, msg);
+      } else {
+        if( i > 1 ) dsn += sprintf(dsTemp+dsn, ",");
+        dsn += sprintf(dsTemp+dsn, "\"DS18B20-%d\":{\"Id\":\"",i);
+        for (uint8_t _i = 0; _i < 8; _i++)
+        {
+          dsn+=sprintf(dsTemp+dsn,"%02X", thermometerAddr[i][_i]);
+        }
+        dsn += sprintf(dsTemp+dsn, "\",\"Temperature\":%s}",msg);
+      }
     }
+    sprintf(dsTemp+dsn, ",\"TempUnit\":\"C\"}");
+    sendMqtt("nodeit/status/temps", dsTemp);
+    
     sprintf(msg, "%d", light);
-    client.publish("nodeit/status/light", msg);
+    sendMqtt("nodeit/status/light", msg);
     dtostrf(humidity,1,1,msg);
-    client.publish("nodeit/status/humidity", msg);
+    sendMqtt("nodeit/status/humidity", msg);
    }
   else
   {
@@ -263,7 +301,10 @@ void setup() {
   }
   setLed(LED_OFF);
   delay(100);
- 
+
+  Serial.println(F("Disconnect ..."));
+  client.disconnect();
+  
   // Now we need to adjust the deepSleepTime with the time that it has taken to
   // connect to the WLAN and the time it took to send all data and to actually get
   // to this point.
@@ -274,9 +315,12 @@ void setup() {
   } else {
     deepSleepTime = ONE_SEC * 10;
   }
+  // Testing ...
+  //deepSleepTime = 5*1000*1000;
+  
   Serial.print(F("Going down for deep sleep to wake again in "));
-  Serial.print(deepSleepTime);
-  Serial.println(F(" microseconds."));
+  Serial.print(deepSleepTime/1000000);
+  Serial.println(F(" seconds."));
  
   // Now sleep for a while
   ESP.deepSleep(deepSleepTime, WAKE_RF_DEFAULT);
